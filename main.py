@@ -33,6 +33,9 @@ class HOGSVMClassifier:
     
     def predict(self, image):
         """Predict emotion from image"""
+        if self.model is None:
+            return "N/A", 0.0, 0
+            
         start_time = time.time()
         features = self.extract_hog_features(image)
         
@@ -56,6 +59,9 @@ class MiniXceptionClassifier:
     
     def predict(self, image):
         """Predict emotion from image"""
+        if self.model is None:
+            return "N/A", 0.0, 0
+            
         start_time = time.time()
         
         # Normalize image
@@ -77,14 +83,13 @@ class LBPKNNClassifier:
     def __init__(self):
         self.model = None
         self.lbp_params = {
-            'n_points': 24,  # Number of circularly symmetric neighbor points
-            'radius': 3,     # Radius of circle
-            'method': 'uniform'  # LBP method
+            'n_points': 24,
+            'radius': 3,
+            'method': 'uniform'
         }
     
     def extract_lbp_features(self, image):
         """Extract LBP features from grayscale image"""
-        # Compute LBP
         lbp = local_binary_pattern(
             image, 
             self.lbp_params['n_points'],
@@ -92,7 +97,6 @@ class LBPKNNClassifier:
             method=self.lbp_params['method']
         )
         
-        # Compute histogram of LBP
         n_bins = self.lbp_params['n_points'] + 2
         hist, _ = np.histogram(
             lbp.ravel(),
@@ -105,31 +109,28 @@ class LBPKNNClassifier:
     
     def predict(self, image):
         """Predict emotion from image"""
+        if self.model is None:
+            return "N/A", 0.0, 0
         
         start_time = time.time()
         features = self.extract_lbp_features(image)
         
-        # Get prediction and probabilities
         prediction = self.model.predict([features])[0]
-        
-        # Get probabilities (distances converted to probabilities)
         distances = self.model.kneighbors([features], return_distance=True)[0][0]
         
-        # Convert distances to probabilities (inverse distance weighting)
-        # Smaller distance = higher probability
-        eps = 1e-10  # To avoid division by zero
+        eps = 1e-10
         weights = 1.0 / (distances + eps)
         probabilities = weights / weights.sum()
-        confidence = probabilities[0]  # Confidence from nearest neighbor
+        confidence = probabilities[0]
         
-        latency = (time.time() - start_time) * 1000  # Convert to ms
+        latency = (time.time() - start_time) * 1000
         
         return EMOTIONS[prediction], confidence, latency
 
 class EmotionRecognitionSystem:
     """Main system for emotion recognition"""
     def __init__(self):
-        # Initialize face detector (Haar Cascade)
+        # Initialize face detector
         self.face_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         )
@@ -139,21 +140,18 @@ class EmotionRecognitionSystem:
         self.mini_xception = MiniXceptionClassifier()
         self.lbp_knn = LBPKNNClassifier()
         
-        # Try to load models
+        # Load models
         self.load_models()
     
     def load_models(self):
         """Load pretrained models if available"""
-        # Try to load HOG+SVM model
         if os.path.exists('hog_svm_model.pkl'):
             with open('hog_svm_model.pkl', 'rb') as f:
                 self.hog_svm.model = pickle.load(f)
             print("✓ HOG+SVM model loaded")
         else:
             print("⚠ HOG+SVM model not found")
-            print("  Train a model or provide 'hog_svm_model.pkl'")
         
-        # Try to load Mini-Xception model
         try:
             import tensorflow as tf
             if os.path.exists('mini_xception_model.h5'):
@@ -161,28 +159,23 @@ class EmotionRecognitionSystem:
                 print("✓ Mini-Xception model loaded")
             else:
                 print("⚠ Mini-Xception model not found")
-                print("  Train a model or provide 'mini_xception_model.h5'")
         except ImportError:
             print("⚠ TensorFlow not installed")
         
-        # Try to load LBP+KNN model
         if os.path.exists('lbp_knn_model.pkl'):
             with open('lbp_knn_model.pkl', 'rb') as f:
                 self.lbp_knn.model = pickle.load(f)
             print("✓ LBP+KNN model loaded")
         else:
             print("⚠ LBP+KNN model not found")
-            print("  Train a model or provide 'lbp_knn_model.pkl'")
     
     def detect_and_crop_face(self, image):
         """Detect face in image and return cropped face"""
-        # Convert to grayscale for face detection
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         else:
             gray = image
         
-        # Detect faces
         faces = self.face_cascade.detectMultiScale(
             gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
         )
@@ -190,35 +183,82 @@ class EmotionRecognitionSystem:
         if len(faces) == 0:
             return None, None
         
-        # Get the largest face
         (x, y, w, h) = max(faces, key=lambda rect: rect[2] * rect[3])
-        
-        # Crop and resize face
         face = gray[y:y+h, x:x+w]
         face_resized = cv2.resize(face, (48, 48))
         
         return face_resized, (x, y, w, h)
     
-    def process_image(self, image):
-        """Process image and return predictions from all models"""
+    def process_video_frame(self, image):
+        """Process video frame with real-time annotations"""
+        if image is None:
+            return None
+        
         # Detect and crop face
+        face, bbox = self.detect_and_crop_face(image)
+        
+        # Create output image
+        output_image = image.copy()
+        
+        if face is None or bbox is None:
+            # No face detected
+            cv2.putText(output_image, "No face detected", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            return output_image
+        
+        x, y, w, h = bbox
+        
+        # Draw rectangle around face
+        cv2.rectangle(output_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        
+        # Get predictions from all models
+        hog_emotion, hog_conf, _ = self.hog_svm.predict(face)
+        cnn_emotion, cnn_conf, _ = self.mini_xception.predict(face)
+        lbp_emotion, lbp_conf, _ = self.lbp_knn.predict(face)
+        
+        # Determine text position (above or below face)
+        y_offset = y - 120 if y > 150 else y + h + 30
+        
+        # Background rectangle for text
+        bg_width = max(len(hog_emotion), len(cnn_emotion), len(lbp_emotion)) * 10 + 100
+        cv2.rectangle(output_image, (x, y_offset), (x+bg_width, y_offset+110), (0, 0, 0), -1)
+        
+        # HOG+SVM prediction
+        cv2.putText(output_image, f"HOG: {hog_emotion}", (x+5, y_offset+25),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 200, 255), 1)
+        cv2.putText(output_image, f"{hog_conf:.1%}", (x+5, y_offset+45),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1)
+        
+        # Mini-Xception prediction
+        cv2.putText(output_image, f"CNN: {cnn_emotion}", (x+5, y_offset+65),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+        cv2.putText(output_image, f"{cnn_conf:.1%}", (x+5, y_offset+85),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 100), 1)
+        
+        # LBP+KNN prediction
+        cv2.putText(output_image, f"LBP: {lbp_emotion}", (x+5, y_offset+105),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 150, 200), 1)
+        cv2.putText(output_image, f"{lbp_conf:.1%}", (x+bg_width-80, y_offset+105),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 150, 200), 1)
+        
+        return output_image
+    
+    def process_image(self, image):
+        """Process single image and return detailed predictions"""
         face, bbox = self.detect_and_crop_face(image)
         
         if face is None:
             return None, "No face detected in image", None, None, None
         
-        # Draw rectangle on original image
         image_with_box = image.copy()
         if bbox is not None:
             x, y, w, h = bbox
             cv2.rectangle(image_with_box, (x, y), (x+w, y+h), (0, 255, 0), 2)
         
-        # Get predictions from all models
         hog_emotion, hog_conf, hog_latency = self.hog_svm.predict(face)
         cnn_emotion, cnn_conf, cnn_latency = self.mini_xception.predict(face)
         lbp_emotion, lbp_conf, lbp_latency = self.lbp_knn.predict(face)
         
-        # Format results
         hog_result = f"**Emotion:** {hog_emotion}\n**Confidence:** {hog_conf:.2%}\n**Latency:** {hog_latency:.2f} ms"
         cnn_result = f"**Emotion:** {cnn_emotion}\n**Confidence:** {cnn_conf:.2%}\n**Latency:** {cnn_latency:.2f} ms"
         lbp_result = f"**Emotion:** {lbp_emotion}\n**Confidence:** {lbp_conf:.2%}\n**Latency:** {lbp_latency:.2f} ms"
@@ -228,77 +268,111 @@ class EmotionRecognitionSystem:
 # Initialize system
 system = EmotionRecognitionSystem()
 
-def predict_emotion(image):
-    """Main function for Gradio interface"""
+def predict_emotion_static(image):
+    """Process static image"""
     if image is None:
         return None, "Please provide an image", None, None, None
-    
     return system.process_image(image)
+
+def predict_emotion_video(image):
+    """Process video stream frame"""
+    if image is None:
+        return None
+    return system.process_video_frame(image)
 
 # Create Gradio interface
 with gr.Blocks(title="Emotion Recognition Comparison") as demo:
     gr.Markdown("""
     # 🎭 Emotion Recognition Model Comparison
     
-    This interface compares three approaches for facial emotion recognition:
-    1. **HOG + Linear SVM**: Traditional computer vision approach
-    2. **Mini-Xception (CNN)**: Deep learning approach trained on FER-2013
-    3. **LBP + KNN**: Local Binary Patterns with K-Nearest Neighbors
-    
-    Upload an image or use your webcam to see predictions side-by-side with confidence scores and latency.
+    Compare three emotion recognition approaches:
+    - **HOG + Linear SVM**: Traditional computer vision
+    - **Mini-Xception (CNN)**: Deep learning
+    - **LBP + KNN**: Texture-based classification
     """)
     
-    with gr.Row():
-        with gr.Column():
-            input_image = gr.Image(sources=["upload", "webcam"], 
-                                  type="numpy", 
-                                  label="Input Image",
-                                  streaming=False)
-            predict_btn = gr.Button("🔍 Analyze Emotions", variant="primary")
+    with gr.Tabs():
+        # Tab 1: Real-time Video Stream
+        with gr.Tab("📹 Real-Time Webcam"):
+            gr.Markdown("""
+            ### Live Emotion Detection
+            Real-time emotion recognition from your webcam with continuous predictions.
+            """)
+            
+            with gr.Row():
+                video_input = gr.Image(sources=["webcam"], 
+                                      type="numpy", 
+                                      label="Webcam Feed",
+                                      streaming=True)
+                video_output = gr.Image(label="Predictions (Live)", 
+                                       type="numpy",
+                                       streaming=True)
+            
+            gr.Markdown("""
+            **🔴 Live Mode:** Predictions are displayed directly on the video stream.
+            - **Blue text**: HOG+SVM prediction
+            - **Orange text**: Mini-Xception prediction
+            - **Pink text**: LBP+KNN prediction
+            """)
+            
+            # Connect video stream
+            video_input.stream(
+                fn=predict_emotion_video,
+                inputs=video_input,
+                outputs=video_output,
+                time_limit=60,
+                stream_every=0.1
+            )
         
-        with gr.Column():
-            output_image = gr.Image(label="Detected Face", type="numpy")
-            cropped_face = gr.Image(label="Cropped Face (48×48)", type="numpy")
-    
-    gr.Markdown("### 📊 Model Predictions")
-    
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown("#### 🔷 HOG + Linear SVM")
-            hog_output = gr.Markdown()
-        
-        with gr.Column():
-            gr.Markdown("#### 🔶 Mini-Xception (CNN)")
-            cnn_output = gr.Markdown()
-        
-        with gr.Column():
-            gr.Markdown("#### 🔸 LBP + KNN")
-            lbp_output = gr.Markdown()
+        # Tab 2: Static Image Analysis
+        with gr.Tab("📸 Static Image"):
+            gr.Markdown("""
+            ### Detailed Image Analysis
+            Upload an image or capture a photo for detailed emotion analysis.
+            """)
+            
+            with gr.Row():
+                with gr.Column():
+                    static_input = gr.Image(sources=["upload", "webcam"], 
+                                          type="numpy", 
+                                          label="Input Image",
+                                          streaming=False)
+                    analyze_btn = gr.Button("🔍 Analyze Emotions", variant="primary")
+                
+                with gr.Column():
+                    static_output = gr.Image(label="Detected Face", type="numpy")
+                    cropped_face = gr.Image(label="Cropped Face (48×48)", type="numpy")
+            
+            gr.Markdown("### 📊 Detailed Predictions")
+            
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("#### 🔷 HOG + Linear SVM")
+                    hog_output = gr.Markdown()
+                
+                with gr.Column():
+                    gr.Markdown("#### 🔶 Mini-Xception (CNN)")
+                    cnn_output = gr.Markdown()
+                
+                with gr.Column():
+                    gr.Markdown("#### 🔸 LBP + KNN")
+                    lbp_output = gr.Markdown()
+            
+            # Connect static analysis
+            analyze_btn.click(
+                fn=predict_emotion_static,
+                inputs=static_input,
+                outputs=[static_output, hog_output, cnn_output, lbp_output, cropped_face]
+            )
     
     gr.Markdown("""
     ---
-    ### 📝 Notes:
-    - Models should be trained on FER-2013 dataset
-    - Face detection uses OpenCV Haar Cascade
-    - All predictions are made on 48×48 grayscale images
-    - Latency includes preprocessing and inference time
+    ### 📝 Notes
+    - Models trained on FER-2013 dataset (7 emotions)
+    - Face detection: OpenCV Haar Cascade
+    - All predictions on 48×48 grayscale images
+    - Real-time mode updates ~10 times per second
     """)
-    
-    # Connect interface
-    predict_btn.click(
-        fn=predict_emotion,
-        inputs=input_image,
-        outputs=[output_image, hog_output, cnn_output, lbp_output, cropped_face]
-    )
-    
-    # Add examples
-    gr.Markdown("### 💡 Try with example images:")
-    gr.Examples(
-        examples=[
-            # You can add example image paths here
-        ],
-        inputs=input_image
-    )
 
 if __name__ == "__main__":
     demo.launch(share=True)
